@@ -63,7 +63,12 @@ struct Directory final : Node {
     }
 
     // Returns pointer to child node if it exists, otherwise nullptr.
-    Node* getChild(const std::string& childName) const {
+    Node* getChild(const std::string& childName) {
+        auto it = children_.find(childName);
+        return (it == children_.end()) ? nullptr : it->second.get();
+    }
+
+    const Node* getChild(const std::string& childName) const {
         auto it = children_.find(childName);
         return (it == children_.end()) ? nullptr : it->second.get();
     }
@@ -109,3 +114,101 @@ private:
 };
 
 } // namespace
+
+struct FileSystem::Impl{
+    std::unique_ptr<Directory> root;
+    Impl() : root(std::make_unique<Directory>("")) {}
+    ~Impl() = default;
+    std::vector<std::string> splitPath(std::string_view path) const{
+        std::vector<std::string> parts;
+        size_t start = 0;
+        while (start < path.size()) {
+            size_t end = path.find('/', start + 1);
+            if(end == std::string_view::npos) {
+                end = path.size();
+            }
+            std::string part(path.substr(start + 1, end - start - 1));
+            if (!part.empty()) {
+                parts.push_back(std::move(part));
+            }
+            start = end;
+        }
+        return parts;
+    }
+
+    template <typename DirPtr, typename NodePtr>
+    NodePtr resolveNodeImpl(DirPtr rootDir, std::string_view path) const {
+        if (path.empty() || path.front() != '/') {
+            throw std::runtime_error("Path must be absolute and start with '/'");
+        }
+
+        auto parts = splitPath(path);
+
+        if (parts.empty()) {
+            return static_cast<NodePtr>(rootDir);
+        }
+
+        DirPtr current = rootDir;
+        for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+            const auto& part = parts[i];
+
+            NodePtr child = current->getChild(part);
+            if (!child) {
+                throw std::runtime_error("Path component does not exist: " + std::string(part));
+            }
+
+            if (child->isFile()) {
+                throw std::runtime_error("Expected directory but found file: " + std::string(part));
+            }
+
+            current = static_cast<DirPtr>(child);
+        }
+
+        const auto& leaf = parts.back();
+        NodePtr leafNode = current->getChild(leaf);
+        if (!leafNode) {
+            throw std::runtime_error("Path does not exist: " + std::string(leaf));
+        }
+
+        return leafNode;
+    }
+
+    const Node* resolveNode(std::string_view path) const {
+        return resolveNodeImpl<const Directory*, const Node*>(root.get(), path);
+    }
+
+    Node* resolveNode(std::string_view path) {
+        return resolveNodeImpl<Directory*, Node*>(root.get(), path);
+    }
+
+    Directory* ensureDirPath(std::string_view path) {
+        if (path.empty() || path.front() != '/') {
+            throw std::runtime_error("Path must be absolute and start with '/'");
+        }
+
+        auto parts = splitPath(path);
+
+        Directory* current = root.get();
+        for (const auto& part : parts) {
+            current = current->ensureDir(part);
+        }
+        return current;
+    }
+
+    File* ensureFilePath(std::string_view path) {
+        if (path.empty() || path.front() != '/') {
+            throw std::runtime_error("Path must be absolute and start with '/'");
+        }
+
+        auto parts = splitPath(path);
+        if (parts.empty()) {
+            throw std::runtime_error("File path cannot be root directory");
+        }
+
+        Directory* current = root.get();
+        for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+            current = current->ensureDir(parts[i]);
+        }
+        return current->ensureFile(parts.back());
+    }
+};
